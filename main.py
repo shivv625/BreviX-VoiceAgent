@@ -57,6 +57,156 @@ def _detect_weather_intent(user_text: str) -> Optional[str]:
     return None
 
 
+def _detect_website_intent(user_text: str) -> Optional[str]:
+    """Detect if user wants to open a website and extract the website name/URL"""
+    if not user_text:
+        return None
+    
+    text = user_text.lower().strip()
+    logging.info(f"🔍 Checking website intent for: '{text}'")
+    
+    # Common patterns for opening websites - more specific patterns
+    patterns = [
+        r"^open\s+(.+?)(?:\s+(?:website|site|page))?(?:\.|!|\?|$)",
+        r"^go\s+to\s+(.+?)(?:\s+(?:website|site|page))?(?:\.|!|\?|$)", 
+        r"^visit\s+(.+?)(?:\s+(?:website|site|page))?(?:\.|!|\?|$)",
+        r"^navigate\s+to\s+(.+?)(?:\s+(?:website|site|page))?(?:\.|!|\?|$)",
+        r"^(?:can\s+you\s+)?(?:please\s+)?open\s+(.+?)(?:\s+(?:website|site|page))?(?:\s+for\s+me)?(?:\.|!|\?|$)",
+        r"^take\s+me\s+to\s+(.+?)(?:\s+(?:website|site|page))?(?:\.|!|\?|$)",
+        r"^show\s+me\s+(.+?)(?:\s+(?:website|site|page))?(?:\.|!|\?|$)",
+        r"^launch\s+(.+?)(?:\s+(?:website|site|page))?(?:\.|!|\?|$)",
+    ]
+    
+    for i, pattern in enumerate(patterns):
+        match = re.search(pattern, text)
+        if match:
+            website = match.group(1).strip().rstrip(",.!?")
+            # Remove common filler words
+            website = re.sub(r"^(the\s+|a\s+|an\s+)", "", website)
+            website = re.sub(r"\s+(website|site|page)$", "", website)
+            if website:
+                logging.info(f"✅ Website intent matched with pattern {i+1}: '{website}'")
+                return website
+    
+    logging.info("❌ No website intent detected")
+    return None
+
+
+def _normalize_website_url(website: str) -> Optional[str]:
+    """Convert website names to proper URLs"""
+    if not website:
+        return None
+    
+    website = website.lower().strip()
+    
+    # Common website mappings
+    website_mappings = {
+        # Social Media
+        'facebook': 'https://facebook.com',
+        'instagram': 'https://instagram.com',
+        'twitter': 'https://twitter.com',
+        'x': 'https://x.com',
+        'linkedin': 'https://linkedin.com',
+        'tiktok': 'https://tiktok.com',
+        'snapchat': 'https://snapchat.com',
+        'whatsapp': 'https://web.whatsapp.com',
+        'telegram': 'https://web.telegram.org',
+        'discord': 'https://discord.com',
+        'reddit': 'https://reddit.com',
+        'pinterest': 'https://pinterest.com',
+        
+        # Search Engines
+        'google': 'https://google.com',
+        'bing': 'https://bing.com',
+        'yahoo': 'https://yahoo.com',
+        'duckduckgo': 'https://duckduckgo.com',
+        
+        # Entertainment
+        'youtube': 'https://youtube.com',
+        'netflix': 'https://netflix.com',
+        'spotify': 'https://spotify.com',
+        'twitch': 'https://twitch.tv',
+        'amazon prime': 'https://primevideo.com',
+        'disney plus': 'https://disneyplus.com',
+        'hulu': 'https://hulu.com',
+        
+        # News
+        'bbc': 'https://bbc.com',
+        'cnn': 'https://cnn.com',
+        'news': 'https://news.google.com',
+        'times of india': 'https://timesofindia.indiatimes.com',
+        'the hindu': 'https://thehindu.com',
+        'ndtv': 'https://ndtv.com',
+        
+        # Shopping
+        'amazon': 'https://amazon.com',
+        'flipkart': 'https://flipkart.com',
+        'ebay': 'https://ebay.com',
+        'myntra': 'https://myntra.com',
+        'nykaa': 'https://nykaa.com',
+        
+        # Education & Learning
+        'coursera': 'https://coursera.org',
+        'udemy': 'https://udemy.com',
+        'khan academy': 'https://khanacademy.org',
+        'edx': 'https://edx.org',
+        'duolingo': 'https://duolingo.com',
+        
+        # Technology
+        'github': 'https://github.com',
+        'stackoverflow': 'https://stackoverflow.com',
+        'medium': 'https://medium.com',
+        'dev.to': 'https://dev.to',
+        'hackernews': 'https://news.ycombinator.com',
+        
+        # Email
+        'gmail': 'https://gmail.com',
+        'outlook': 'https://outlook.com',
+        'yahoo mail': 'https://mail.yahoo.com',
+        
+        # Maps
+        'google maps': 'https://maps.google.com',
+        'maps': 'https://maps.google.com',
+        
+        # Cloud Storage
+        'google drive': 'https://drive.google.com',
+        'dropbox': 'https://dropbox.com',
+        'onedrive': 'https://onedrive.com',
+        
+        # AI Tools
+        'chatgpt': 'https://chat.openai.com',
+        'claude': 'https://claude.ai',
+        'bard': 'https://bard.google.com',
+        'copilot': 'https://copilot.microsoft.com',
+    }
+    
+    # Check direct mapping first
+    if website in website_mappings:
+        return website_mappings[website]
+    
+    # If it already looks like a URL, validate and return
+    if website.startswith(('http://', 'https://')):
+        return website
+    
+    # If it contains a dot, assume it's a domain
+    if '.' in website:
+        if not website.startswith(('http://', 'https://')):
+            return f'https://{website}'
+        return website
+    
+    # Try to find partial matches
+    for key, url in website_mappings.items():
+        if website in key or key in website:
+            return url
+    
+    # Last resort: assume it's a domain and add .com
+    if ' ' not in website and len(website) > 2:
+        return f'https://{website}.com'
+    
+    # If we can't determine the URL, search Google for it
+    return f'https://www.google.com/search?q={website.replace(" ", "+")}'
+
+
 def _weather_code_description(code: int) -> str:
     # Open-Meteo WMO weather interpretation codes
     mapping = {
@@ -151,8 +301,81 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
         logging.error("Cannot get LLM response because Gemini model is not initialized.")
         return
 
-    logging.info(f"Sending to Gemini with history: '{transcript}'")
+    # Check for special skills FIRST, before connecting to any external services
     
+    # Website opening skill: detect and handle directly
+    website_intent = _detect_website_intent(transcript)
+    if website_intent:
+        logging.info(f"🌐 Website intent detected: '{website_intent}' - Processing directly without Gemini")
+        await client_websocket.send_text(json.dumps({"type": "status", "message": "Opening website..."}))
+        url = _normalize_website_url(website_intent)
+        
+        if url:
+            logging.info(f"🌐 Normalized URL: {url}")
+            # Send to UI as if LLM chunk first
+            response_text = f"Opening {website_intent} for you."
+            await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": response_text}))
+            
+            # Send website opening command to client
+            await client_websocket.send_text(json.dumps({
+                "type": "open_url", 
+                "url": url,
+                "website_name": website_intent
+            }))
+            logging.info(f"🌐 Sent open_url command to client: {url}")
+            
+            # Add to chat history and return early (no need for TTS for this)
+            chat_history.append({"role": "model", "parts": [response_text]})
+            logging.info("Website opening command completed - no TTS needed.")
+            return
+        else:
+            response_text = f"I couldn't find the website '{website_intent}'. Let me search for it instead."
+            await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": response_text}))
+            search_url = f'https://www.google.com/search?q={website_intent.replace(" ", "+")}'
+            await client_websocket.send_text(json.dumps({
+                "type": "open_url", 
+                "url": search_url,
+                "website_name": f"Search for {website_intent}"
+            }))
+            chat_history.append({"role": "model", "parts": [response_text]})
+            return
+
+    # Weather skill: detect and answer directly
+    location = _detect_weather_intent(transcript)
+    if location:
+        await client_websocket.send_text(json.dumps({"type": "status", "message": "Checking weather..."}))
+        loop = asyncio.get_running_loop()
+        weather_text = None
+        try:
+            weather_text = await asyncio.wait_for(
+                loop.run_in_executor(None, _fetch_weather_sync, location),
+                timeout=5.0,
+            )
+        except Exception as e:
+            logging.warning(f"Weather lookup timeout/error: {e}")
+            weather_text = None
+
+        if weather_text:
+            # Send to UI as if LLM chunk
+            await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": weather_text}))
+            # Send to TTS
+            murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={config.MURF_API_KEY}&sample_rate=44100&channel_type=MONO&format=MP3"
+            async with websockets.connect(murf_uri) as websocket:
+                voice_id = "en-US-natalie"
+                context_id = f"voice-agent-context-{datetime.now().isoformat()}"
+                config_msg = {
+                    "voice_config": {"voiceId": voice_id, "style": "Conversational"},
+                    "context_id": context_id
+                }
+                await websocket.send(json.dumps(config_msg))
+                await websocket.send(json.dumps({"text": weather_text, "end": True, "context_id": context_id}))
+            chat_history.append({"role": "model", "parts": [weather_text]})
+            logging.info("Weather response completed.")
+            return
+
+    # If no special skills matched, proceed with normal Gemini processing
+    logging.info(f"No special skills matched, sending to Gemini: '{transcript}'")
+
     murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={config.MURF_API_KEY}&sample_rate=44100&channel_type=MONO&format=MP3"
     
     try:
@@ -201,7 +424,51 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
             receiver_task = asyncio.create_task(receive_and_forward_audio())
 
             try:
-                browsing_context = ""
+                # Check for special skills BEFORE processing with Gemini
+                
+                # Website opening skill: detect and handle directly
+                website_intent = _detect_website_intent(transcript)
+                if website_intent:
+                    logging.info(f"🌐 Website intent detected: '{website_intent}'")
+                    await client_websocket.send_text(json.dumps({"type": "status", "message": "Opening website..."}))
+                    url = _normalize_website_url(website_intent)
+                    
+                    if url:
+                        logging.info(f"🌐 Normalized URL: {url}")
+                        # Send to UI as if LLM chunk first
+                        response_text = f"Opening {website_intent} for you."
+                        await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": response_text}))
+                        
+                        # Send website opening command to client
+                        await client_websocket.send_text(json.dumps({
+                            "type": "open_url", 
+                            "url": url,
+                            "website_name": website_intent
+                        }))
+                        logging.info(f"🌐 Sent open_url command to client: {url}")
+                        
+                        # Send to TTS
+                        await websocket.send(json.dumps({"text": response_text, "end": True, "context_id": context_id}))
+                        chat_history.append({"role": "model", "parts": [response_text]})
+                        
+                        # Wait for TTS finalize and return
+                        await asyncio.wait_for(receiver_task, timeout=60.0)
+                        logging.info("Website opening response streamed via TTS.")
+                        return
+                    else:
+                        response_text = f"I couldn't find the website '{website_intent}'. Let me search for it instead."
+                        await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": response_text}))
+                        search_url = f'https://www.google.com/search?q={website_intent.replace(" ", "+")}'
+                        await client_websocket.send_text(json.dumps({
+                            "type": "open_url", 
+                            "url": search_url,
+                            "website_name": f"Search for {website_intent}"
+                        }))
+                        await websocket.send(json.dumps({"text": response_text, "end": True, "context_id": context_id}))
+                        chat_history.append({"role": "model", "parts": [response_text]})
+                        await asyncio.wait_for(receiver_task, timeout=60.0)
+                        return
+
                 # Weather skill: detect and answer directly
                 location = _detect_weather_intent(transcript)
                 if location:
@@ -242,7 +509,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
                 IMPORTANT RESPONSE RULES (HIGH PRIORITY AND SHORT):
                 - If asked "who built you" / "who created you" (or similar), say exactly: "I was built by Sibsankar, a B.Tech CSE student from Odisha."
                 - If asked "what is your name" / "who are you" / "introduce yourself" (or similar), say concisely: "I am Brevix, a super‑advanced robot from a multi‑universe where only AI robots exist, and the younger brother of Shiv."
-                - You may briefly weave your persona into answers only when relevant to the user’s query. Otherwise, focus on the user’s goal.
+                - You may briefly weave your persona into answers only when relevant to the user's query. Otherwise, focus on the user's goal.
                 - Keep responses short, natural, and conversational. No markdown, plain text only.
 
                 Continue the conversation based on the provided chat history. The user has just said: "{transcript}"

@@ -30,6 +30,158 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
   };
 
+  // NEW: Function to handle opening websites with multiple fallback methods
+  const openWebsite = (url, websiteName) => {
+    console.log(
+      `🌐 Brevix: Attempting to open ${websiteName || "website"} at ${url}`
+    );
+
+    // Method 1: Try window.open() immediately
+    let newWindow = null;
+    try {
+      newWindow = window.open(url, "_blank", "noopener,noreferrer");
+      console.log("Window.open() result:", newWindow);
+    } catch (error) {
+      console.error("window.open() failed:", error);
+    }
+
+    // Check if popup was successful
+    if (
+      !newWindow ||
+      newWindow.closed ||
+      typeof newWindow.closed === "undefined"
+    ) {
+      console.warn("🚫 Popup blocked or failed, trying alternative methods...");
+
+      // Method 2: Create a temporary clickable link and auto-click it
+      try {
+        const tempLink = document.createElement("a");
+        tempLink.href = url;
+        tempLink.target = "_blank";
+        tempLink.rel = "noopener noreferrer";
+        tempLink.style.display = "none";
+        document.body.appendChild(tempLink);
+
+        // Simulate click
+        tempLink.click();
+        document.body.removeChild(tempLink);
+        console.log("✅ Alternative method: Auto-clicked temporary link");
+
+        // Success notification
+        showNotification("Website Opened", websiteName || "Website", "success");
+        return;
+      } catch (linkError) {
+        console.error("Temporary link method failed:", linkError);
+
+        // Method 3: Show interactive notification with manual click
+        showInteractiveNotification(url, websiteName);
+        return;
+      }
+    } else {
+      console.log("✅ Website opened successfully via window.open()");
+      // Success notification for normal popup
+      showNotification("Website Opened", websiteName || "Website", "success");
+    }
+  };
+
+  // Helper function for notifications
+  const showNotification = (title, subtitle, type = "success") => {
+    const colors = {
+      success: "from-blue-500 to-cyan-500",
+      warning: "from-yellow-500 to-orange-500",
+      error: "from-red-500 to-pink-500",
+    };
+
+    const icons = {
+      success:
+        '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>',
+      warning:
+        '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"></path>',
+      error:
+        '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>',
+    };
+
+    const notification = document.createElement("div");
+    notification.className = `fixed top-4 right-4 bg-gradient-to-r ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 transition-all duration-300 transform translate-x-full`;
+    notification.innerHTML = `
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          ${icons[type]}
+        </svg>
+        <div>
+          <div class="font-medium">${title}</div>
+          <div class="text-sm opacity-90">${subtitle}</div>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(notification);
+
+    // Animate in
+    setTimeout(() => {
+      notification.classList.remove("translate-x-full");
+      notification.classList.add("translate-x-0");
+    }, 100);
+
+    // Remove notification
+    const duration = type === "warning" ? 5000 : 3000;
+    setTimeout(() => {
+      notification.classList.add("translate-x-full");
+      setTimeout(() => {
+        if (document.body.contains(notification)) {
+          document.body.removeChild(notification);
+        }
+      }, 300);
+    }, duration);
+  };
+
+  // Interactive notification for blocked popups
+  const showInteractiveNotification = (url, websiteName) => {
+    const notification = document.createElement("div");
+    notification.className =
+      "fixed top-4 right-4 bg-gradient-to-r from-orange-500 to-red-500 text-white px-6 py-4 rounded-lg shadow-lg z-50 transition-all duration-300 transform translate-x-full cursor-pointer hover:shadow-xl";
+    notification.innerHTML = `
+      <div class="flex items-center gap-3">
+        <svg class="w-5 h-5 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"></path>
+        </svg>
+        <div>
+          <div class="font-medium">Popup Blocked!</div>
+          <div class="text-sm opacity-90">Click here to open ${
+            websiteName || "website"
+          }</div>
+          <div class="text-xs opacity-75 mt-1">Or allow popups for this site</div>
+        </div>
+      </div>
+    `;
+
+    // Make it clickable
+    notification.onclick = () => {
+      window.open(url, "_blank", "noopener,noreferrer");
+      document.body.removeChild(notification);
+    };
+
+    document.body.appendChild(notification);
+
+    // Animate in
+    setTimeout(() => {
+      notification.classList.remove("translate-x-full");
+      notification.classList.add("translate-x-0");
+    }, 100);
+
+    // Auto-remove after 8 seconds
+    setTimeout(() => {
+      if (document.body.contains(notification)) {
+        notification.classList.add("translate-x-full");
+        setTimeout(() => {
+          if (document.body.contains(notification)) {
+            document.body.removeChild(notification);
+          }
+        }, 300);
+      }
+    }, 8000);
+  };
+
   // MODIFIED: This function now stops the specific sound source instead of destroying the context.
   const stopCurrentPlayback = () => {
     console.log(
@@ -209,6 +361,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 chatContainer.scrollTop = chatContainer.scrollHeight;
               }
               break;
+            case "open_url":
+              // NEW: Handle website opening
+              console.log("🌐 Brevix: Received open_url command:", data);
+              console.log("🌐 URL to open:", data.url);
+              console.log("🌐 Website name:", data.website_name);
+              if (data.url) {
+                openWebsite(data.url, data.website_name);
+              } else {
+                console.error("❌ No URL provided in open_url command");
+              }
+              break;
             case "audio_start":
               updateStatus("speaking", "Generating Response...");
               console.log(
@@ -264,7 +427,6 @@ document.addEventListener("DOMContentLoaded", () => {
             case "error":
               updateStatus("error", `Error: ${data.message}`);
               break;
-            // Note: open_url feature removed
           }
         } catch (err) {
           console.error("Error parsing message:", err);
