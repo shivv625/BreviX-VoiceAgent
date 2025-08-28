@@ -14,12 +14,27 @@ document.addEventListener("DOMContentLoaded", () => {
   // NEW: Keep a reference to the current audio source to stop it gracefully
   let currentAudioSource = null;
 
+  // NEW: Store API keys
+  let apiKeys = {
+    gemini: "",
+    assemblyai: "",
+    murf: "",
+    tavily: "",
+  };
+
   const recordBtn = document.getElementById("recordBtn");
   const statusDisplay = document.getElementById("statusDisplay");
   const chatDisplay = document.getElementById("chatDisplay");
   const chatContainer = document.getElementById("chatContainer");
   const clearBtnContainer = document.getElementById("clearBtnContainer");
   const clearBtn = document.getElementById("clearBtn");
+
+  // NEW: Config elements
+  const configBtn = document.getElementById("configBtn");
+  const configModal = document.getElementById("configModal");
+  const configOverlay = document.getElementById("configOverlay");
+  const configSaveBtn = document.getElementById("configSaveBtn");
+  const configCloseBtn = document.getElementById("configCloseBtn");
 
   // Enhanced status management
   const updateStatus = (status, message) => {
@@ -28,6 +43,127 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="w-2 h-2 bg-current rounded-full"></div>
             <span>${message}</span>
         `;
+  };
+
+  // NEW: API Configuration Management
+  const openConfigModal = () => {
+    // Load current values
+    document.getElementById("geminiKey").value = apiKeys.gemini || "";
+    document.getElementById("assemblyaiKey").value = apiKeys.assemblyai || "";
+    document.getElementById("murfKey").value = apiKeys.murf || "";
+    document.getElementById("tavilyKey").value = apiKeys.tavily || "";
+
+    configModal.classList.remove("hidden");
+    configModal.classList.add("flex");
+    setTimeout(() => {
+      configModal.classList.remove("opacity-0");
+      configModal.querySelector(".transform").classList.remove("scale-95");
+      configModal.querySelector(".transform").classList.add("scale-100");
+    }, 10);
+  };
+
+  const closeConfigModal = () => {
+    configModal.classList.add("opacity-0");
+    configModal.querySelector(".transform").classList.remove("scale-100");
+    configModal.querySelector(".transform").classList.add("scale-95");
+    setTimeout(() => {
+      configModal.classList.add("hidden");
+      configModal.classList.remove("flex");
+    }, 200);
+  };
+
+  const saveApiKeys = () => {
+    const newKeys = {
+      gemini: document.getElementById("geminiKey").value.trim(),
+      assemblyai: document.getElementById("assemblyaiKey").value.trim(),
+      murf: document.getElementById("murfKey").value.trim(),
+      tavily: document.getElementById("tavilyKey").value.trim(),
+    };
+
+    // Update local storage
+    Object.keys(newKeys).forEach((key) => {
+      if (newKeys[key]) {
+        localStorage.setItem(`api_key_${key}`, newKeys[key]);
+        apiKeys[key] = newKeys[key];
+      } else {
+        localStorage.removeItem(`api_key_${key}`);
+        apiKeys[key] = "";
+      }
+    });
+
+    // Send to server if connected
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(
+        JSON.stringify({
+          type: "update_api_keys",
+          keys: newKeys,
+        })
+      );
+    }
+
+    updateConfigStatus();
+    closeConfigModal();
+
+    // Show success notification
+    showNotification(
+      "Settings Saved",
+      "API keys have been updated successfully",
+      "success"
+    );
+  };
+
+  const loadApiKeys = () => {
+    // Load from localStorage
+    Object.keys(apiKeys).forEach((key) => {
+      const stored = localStorage.getItem(`api_key_${key}`);
+      if (stored) {
+        apiKeys[key] = stored;
+      }
+    });
+    updateConfigStatus();
+  };
+
+  const updateConfigStatus = () => {
+    const indicators = {
+      gemini: document.getElementById("geminiStatus"),
+      assemblyai: document.getElementById("assemblyaiStatus"),
+      murf: document.getElementById("murStatus"),
+      tavily: document.getElementById("tavilyStatus"),
+    };
+
+    Object.keys(indicators).forEach((key) => {
+      if (indicators[key]) {
+        const hasKey = !!apiKeys[key];
+        indicators[key].className = `w-2 h-2 rounded-full ${
+          hasKey ? "bg-green-400" : "bg-red-400"
+        }`;
+        indicators[key].title = hasKey
+          ? `${key} configured`
+          : `${key} not configured`;
+      }
+    });
+
+    // Update config button state
+    const configuredCount = Object.values(apiKeys).filter(
+      (key) => !!key
+    ).length;
+    const configIcon = configBtn.querySelector("svg");
+    if (configuredCount === 4) {
+      configIcon.className = configIcon.className.replace(
+        "text-gray-400",
+        "text-green-400"
+      );
+    } else if (configuredCount > 0) {
+      configIcon.className = configIcon.className.replace(
+        "text-gray-400",
+        "text-yellow-400"
+      );
+    } else {
+      configIcon.className = configIcon.className.replace(
+        /text-(green|yellow)-400/,
+        "text-gray-400"
+      );
+    }
   };
 
   // NEW: Function to handle opening websites with multiple fallback methods
@@ -244,6 +380,37 @@ document.addEventListener("DOMContentLoaded", () => {
   const startRecording = async () => {
     console.log("🎤 Brevix: Let's talk! Initializing the audio session.");
 
+    // Check if required API keys are available
+    if (!apiKeys.assemblyai) {
+      showNotification(
+        "Missing API Key",
+        "AssemblyAI API key is required for transcription",
+        "error"
+      );
+      openConfigModal();
+      return;
+    }
+
+    if (!apiKeys.gemini) {
+      showNotification(
+        "Missing API Key",
+        "Gemini API key is required for AI responses",
+        "error"
+      );
+      openConfigModal();
+      return;
+    }
+
+    if (!apiKeys.murf) {
+      showNotification(
+        "Missing API Key",
+        "Murf API key is required for text-to-speech",
+        "error"
+      );
+      openConfigModal();
+      return;
+    }
+
     // MODIFIED: Initialize AudioContext only once.
     if (!audioContext) {
       try {
@@ -277,11 +444,22 @@ document.addEventListener("DOMContentLoaded", () => {
         );
         updateStatus("connecting", "Establishing Connection...");
 
+        // Send API keys to server
+        socket.send(
+          JSON.stringify({
+            type: "update_api_keys",
+            keys: apiKeys,
+          })
+        );
+
         heartbeatInterval = setInterval(() => {
           if (socket?.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "ping" }));
           }
         }, 25000);
+
+        // Send start transcription signal
+        socket.send(JSON.stringify({ type: "start_transcription" }));
 
         try {
           const stream = await navigator.mediaDevices.getUserMedia({
@@ -345,6 +523,15 @@ document.addEventListener("DOMContentLoaded", () => {
             case "status":
               updateStatus("connecting", data.message);
               break;
+            case "api_keys_status":
+              // Handle default keys status from server
+              if (data.default_keys) {
+                console.log("Server default keys status:", data.default_keys);
+              }
+              break;
+            case "api_keys_updated":
+              console.log("API keys updated on server");
+              break;
             case "transcription":
               if (data.end_of_turn && data.text) {
                 addToChatLog(data.text, "user");
@@ -362,10 +549,8 @@ document.addEventListener("DOMContentLoaded", () => {
               }
               break;
             case "open_url":
-              // NEW: Handle website opening
+              // Handle website opening
               console.log("🌐 Brevix: Received open_url command:", data);
-              console.log("🌐 URL to open:", data.url);
-              console.log("🌐 Website name:", data.website_name);
               if (data.url) {
                 openWebsite(data.url, data.website_name);
               } else {
@@ -426,6 +611,7 @@ document.addEventListener("DOMContentLoaded", () => {
               break;
             case "error":
               updateStatus("error", `Error: ${data.message}`);
+              showNotification("Error", data.message, "error");
               break;
           }
         } catch (err) {
@@ -524,6 +710,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return contentSpan;
   };
 
+  // Event Listeners
   clearBtn.addEventListener("click", () => {
     chatContainer.innerHTML = "";
     clearBtn.style.display = "none";
@@ -537,10 +724,29 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // NEW: Config modal event listeners
+  configBtn.addEventListener("click", openConfigModal);
+  configCloseBtn.addEventListener("click", closeConfigModal);
+  configSaveBtn.addEventListener("click", saveApiKeys);
+  configOverlay.addEventListener("click", closeConfigModal);
+
+  // Prevent modal from closing when clicking inside it
+  configModal.querySelector(".bg-white").addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+
+  // Handle Escape key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !configModal.classList.contains("hidden")) {
+      closeConfigModal();
+    }
+  });
+
   window.addEventListener("beforeunload", () => {
     if (isRecording) stopRecording();
   });
 
-  // Initialize clear button as hidden
+  // Initialize
+  loadApiKeys();
   clearBtn.style.display = "none";
 });

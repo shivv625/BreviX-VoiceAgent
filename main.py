@@ -35,12 +35,36 @@ BASE_DIR = PathLib(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# Global variables to store API keys (will be updated per session)
+current_api_keys = {
+    "gemini": config.GEMINI_API_KEY,
+    "assemblyai": config.ASSEMBLYAI_API_KEY,
+    "murf": config.MURF_API_KEY,
+    "tavily": config.TAVILY_API_KEY
+}
+
+# Initialize Gemini model with default key if available
 if config.GEMINI_API_KEY:
     genai.configure(api_key=config.GEMINI_API_KEY)
     gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 else:
     gemini_model = None
     logging.warning("Gemini model not initialized. GEMINI_API_KEY is missing.")
+
+
+def get_gemini_model(api_key: str = None):
+    """Get or create Gemini model with the provided API key"""
+    try:
+        if api_key:
+            genai.configure(api_key=api_key)
+            return genai.GenerativeModel('gemini-1.5-flash')
+        elif gemini_model:
+            return gemini_model
+        else:
+            return None
+    except Exception as e:
+        logging.error(f"Error configuring Gemini model: {e}")
+        return None
 
 
 def _detect_weather_intent(user_text: str) -> Optional[str]:
@@ -293,12 +317,29 @@ def _fetch_weather_sync(location: str) -> Optional[str]:
         return None
 
 
-async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, chat_history: List[dict]):
+async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, chat_history: List[dict], session_api_keys: dict):
     if not transcript or not transcript.strip():
         return
 
-    if not gemini_model:
+    # Use session API keys if provided, otherwise fall back to defaults
+    gemini_key = session_api_keys.get('gemini') or current_api_keys['gemini']
+    murf_key = session_api_keys.get('murf') or current_api_keys['murf']
+    
+    session_gemini_model = get_gemini_model(gemini_key)
+    if not session_gemini_model:
         logging.error("Cannot get LLM response because Gemini model is not initialized.")
+        await client_websocket.send_text(json.dumps({
+            "type": "error", 
+            "message": "Gemini API key is missing or invalid. Please configure it in the settings."
+        }))
+        return
+
+    if not murf_key:
+        logging.error("Murf API key is missing.")
+        await client_websocket.send_text(json.dumps({
+            "type": "error", 
+            "message": "Murf API key is missing. Please configure it in the settings."
+        }))
         return
 
     # Check for special skills FIRST, before connecting to any external services
@@ -359,7 +400,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
             # Send to UI as if LLM chunk
             await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": weather_text}))
             # Send to TTS
-            murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={config.MURF_API_KEY}&sample_rate=44100&channel_type=MONO&format=MP3"
+            murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
             async with websockets.connect(murf_uri) as websocket:
                 voice_id = "en-US-natalie"
                 context_id = f"voice-agent-context-{datetime.now().isoformat()}"
@@ -376,7 +417,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
     # If no special skills matched, proceed with normal Gemini processing
     logging.info(f"No special skills matched, sending to Gemini: '{transcript}'")
 
-    murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={config.MURF_API_KEY}&sample_rate=44100&channel_type=MONO&format=MP3"
+    murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
     
     try:
         async with websockets.connect(murf_uri) as websocket:
@@ -424,77 +465,6 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
             receiver_task = asyncio.create_task(receive_and_forward_audio())
 
             try:
-                # Check for special skills BEFORE processing with Gemini
-                
-                # Website opening skill: detect and handle directly
-                website_intent = _detect_website_intent(transcript)
-                if website_intent:
-                    logging.info(f"🌐 Website intent detected: '{website_intent}'")
-                    await client_websocket.send_text(json.dumps({"type": "status", "message": "Opening website..."}))
-                    url = _normalize_website_url(website_intent)
-                    
-                    if url:
-                        logging.info(f"🌐 Normalized URL: {url}")
-                        # Send to UI as if LLM chunk first
-                        response_text = f"Opening {website_intent} for you."
-                        await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": response_text}))
-                        
-                        # Send website opening command to client
-                        await client_websocket.send_text(json.dumps({
-                            "type": "open_url", 
-                            "url": url,
-                            "website_name": website_intent
-                        }))
-                        logging.info(f"🌐 Sent open_url command to client: {url}")
-                        
-                        # Send to TTS
-                        await websocket.send(json.dumps({"text": response_text, "end": True, "context_id": context_id}))
-                        chat_history.append({"role": "model", "parts": [response_text]})
-                        
-                        # Wait for TTS finalize and return
-                        await asyncio.wait_for(receiver_task, timeout=60.0)
-                        logging.info("Website opening response streamed via TTS.")
-                        return
-                    else:
-                        response_text = f"I couldn't find the website '{website_intent}'. Let me search for it instead."
-                        await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": response_text}))
-                        search_url = f'https://www.google.com/search?q={website_intent.replace(" ", "+")}'
-                        await client_websocket.send_text(json.dumps({
-                            "type": "open_url", 
-                            "url": search_url,
-                            "website_name": f"Search for {website_intent}"
-                        }))
-                        await websocket.send(json.dumps({"text": response_text, "end": True, "context_id": context_id}))
-                        chat_history.append({"role": "model", "parts": [response_text]})
-                        await asyncio.wait_for(receiver_task, timeout=60.0)
-                        return
-
-                # Weather skill: detect and answer directly
-                location = _detect_weather_intent(transcript)
-                if location:
-                    await client_websocket.send_text(json.dumps({"type": "status", "message": "Checking weather..."}))
-                    loop = asyncio.get_running_loop()
-                    weather_text = None
-                    try:
-                        weather_text = await asyncio.wait_for(
-                            loop.run_in_executor(None, _fetch_weather_sync, location),
-                            timeout=5.0,
-                        )
-                    except Exception as e:
-                        logging.warning(f"Weather lookup timeout/error: {e}")
-                        weather_text = None
-
-                    if weather_text:
-                        # Send to UI as if LLM chunk
-                        await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": weather_text}))
-                        # Send to TTS
-                        await websocket.send(json.dumps({"text": weather_text, "end": True, "context_id": context_id}))
-                        chat_history.append({"role": "model", "parts": [weather_text]})
-                        # Wait for TTS finalize and return
-                        await asyncio.wait_for(receiver_task, timeout=60.0)
-                        logging.info("Weather response streamed via TTS.")
-                        return
-
                 prompt = f"""You are Brevix, a friendly and conversational AI voice assistant.
 
                 PERSONA AND STYLE:
@@ -519,7 +489,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
                 
                 chat_history.append({"role": "user", "parts": [prompt]})
                 
-                chat = gemini_model.start_chat(history=chat_history[:-1])
+                chat = session_gemini_model.start_chat(history=chat_history[:-1])
 
                 def generate_sync():
                     return chat.send_message(prompt, stream=True)
@@ -579,6 +549,11 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
         await client_websocket.send_text(json.dumps({"type": "audio_interrupt"}))
     except Exception as e:
         logging.error(f"Error in LLM/TTS streaming function: {e}", exc_info=True)
+        # Send error message to client
+        await client_websocket.send_text(json.dumps({
+            "type": "error", 
+            "message": "Failed to process your request. Please check your API keys."
+        }))
 
 
 @app.get("/")
@@ -600,14 +575,21 @@ async def websocket_audio_streaming(websocket: WebSocket):
     llm_task = None
     last_processed_transcript = ""
     chat_history = []
+    session_api_keys = {}  # Store API keys for this session
     
-    if not config.ASSEMBLYAI_API_KEY:
-        logging.error("ASSEMBLYAI_API_KEY not configured")
-        await send_client_message(websocket, {"type": "error", "message": "AssemblyAI API key not configured on the server."})
-        await websocket.close(code=1000)
-        return
+    # Send default API key status to client
+    default_keys_status = {
+        "gemini": bool(current_api_keys["gemini"]),
+        "assemblyai": bool(current_api_keys["assemblyai"]),
+        "murf": bool(current_api_keys["murf"]),
+        "tavily": bool(current_api_keys["tavily"])
+    }
+    await send_client_message(websocket, {
+        "type": "api_keys_status", 
+        "default_keys": default_keys_status
+    })
 
-    client = StreamingClient(StreamingClientOptions(api_key=config.ASSEMBLYAI_API_KEY))
+    client = None  # Will be initialized when we have AssemblyAI key
 
     def on_turn(self: Type[StreamingClient], event: TurnEvent):
         nonlocal last_processed_transcript, llm_task
@@ -628,34 +610,74 @@ async def websocket_audio_streaming(websocket: WebSocket):
             transcript_message = { "type": "transcription", "text": transcript_text, "end_of_turn": True }
             asyncio.run_coroutine_threadsafe(send_client_message(websocket, transcript_message), main_loop)
             
-            llm_task = asyncio.run_coroutine_threadsafe(get_llm_response_stream(transcript_text, websocket, chat_history), main_loop)
+            llm_task = asyncio.run_coroutine_threadsafe(
+                get_llm_response_stream(transcript_text, websocket, chat_history, session_api_keys), 
+                main_loop
+            )
             
         elif transcript_text and transcript_text == last_processed_transcript:
             logging.warning(f"Duplicate turn detected, ignoring: '{transcript_text}'")
 
-    def on_begin(self: Type[StreamingClient], event: BeginEvent): logging.info(f"Transcription session started.")
-    def on_terminated(self: Type[StreamingClient], event: TerminationEvent): logging.info(f"Transcription session terminated.")
-    def on_error(self: Type[StreamingClient], error: StreamingError): logging.error(f"AssemblyAI streaming error: {error}")
-
-    client.on(StreamingEvents.Begin, on_begin)
-    client.on(StreamingEvents.Turn, on_turn)
-    client.on(StreamingEvents.Termination, on_terminated)
-    client.on(StreamingEvents.Error, on_error)
+    def on_begin(self: Type[StreamingClient], event: BeginEvent): 
+        logging.info(f"Transcription session started.")
+    def on_terminated(self: Type[StreamingClient], event: TerminationEvent): 
+        logging.info(f"Transcription session terminated.")
+    def on_error(self: Type[StreamingClient], error: StreamingError): 
+        logging.error(f"AssemblyAI streaming error: {error}")
 
     try:
-        client.connect(StreamingParameters(sample_rate=16000, format_turns=True))
-        await send_client_message(websocket, {"type": "status", "message": "Connected to transcription service."})
-
         while True:
             message = await websocket.receive()
             if "text" in message:
                 try:
                     data = json.loads(message['text'])
+                    
                     if data.get("type") == "ping":
                         await websocket.send_text(json.dumps({"type": "pong"}))
-                except (json.JSONDecodeError, TypeError): pass
+                    
+                    elif data.get("type") == "update_api_keys":
+                        # Update session API keys
+                        keys = data.get("keys", {})
+                        session_api_keys.update(keys)
+                        logging.info(f"Updated API keys for session: {list(keys.keys())}")
+                        
+                        # Initialize AssemblyAI client if key is provided and client doesn't exist
+                        assemblyai_key = keys.get('assemblyai') or current_api_keys['assemblyai']
+                        if assemblyai_key and not client:
+                            client = StreamingClient(StreamingClientOptions(api_key=assemblyai_key))
+                            client.on(StreamingEvents.Begin, on_begin)
+                            client.on(StreamingEvents.Turn, on_turn)
+                            client.on(StreamingEvents.Termination, on_terminated)
+                            client.on(StreamingEvents.Error, on_error)
+                            client.connect(StreamingParameters(sample_rate=16000, format_turns=True))
+                            await send_client_message(websocket, {"type": "status", "message": "Connected to transcription service."})
+                            logging.info("AssemblyAI client initialized with user-provided key")
+                        
+                        await websocket.send_text(json.dumps({"type": "api_keys_updated"}))
+                    
+                    elif data.get("type") == "start_transcription":
+                        # Initialize client if not already done
+                        assemblyai_key = session_api_keys.get('assemblyai') or current_api_keys['assemblyai']
+                        if not assemblyai_key:
+                            await send_client_message(websocket, {
+                                "type": "error", 
+                                "message": "AssemblyAI API key is required. Please configure it in the settings."
+                            })
+                            continue
+                            
+                        if not client:
+                            client = StreamingClient(StreamingClientOptions(api_key=assemblyai_key))
+                            client.on(StreamingEvents.Begin, on_begin)
+                            client.on(StreamingEvents.Turn, on_turn)
+                            client.on(StreamingEvents.Termination, on_terminated)
+                            client.on(StreamingEvents.Error, on_error)
+                            client.connect(StreamingParameters(sample_rate=16000, format_turns=True))
+                            await send_client_message(websocket, {"type": "status", "message": "Connected to transcription service."})
+                        
+                except (json.JSONDecodeError, TypeError): 
+                    pass
             elif "bytes" in message:
-                if message['bytes']:
+                if message['bytes'] and client:
                     client.stream(message['bytes'])
             
     except (WebSocketDisconnect, RuntimeError) as e:
@@ -666,7 +688,8 @@ async def websocket_audio_streaming(websocket: WebSocket):
         if llm_task and not llm_task.done():
             llm_task.cancel()
         logging.info("Cleaning up connection resources.")
-        client.disconnect()
+        if client:
+            client.disconnect()
         if websocket.client_state.name != 'DISCONNECTED':
             await websocket.close()
 
