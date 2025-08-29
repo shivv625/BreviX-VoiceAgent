@@ -403,7 +403,8 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
             # Send to TTS (Fixed: Add proper TTS handling)
             try:
                 murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
-                async with websockets.connect(murf_uri, timeout=10) as websocket:
+                # FIXED: Changed `timeout` to `open_timeout`
+                async with websockets.connect(murf_uri, open_timeout=10) as websocket:
                     voice_id = "en-US-natalie"
                     context_id = f"voice-agent-context-{datetime.now().isoformat()}"
                     
@@ -467,7 +468,8 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
     try:
         murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
         
-        async with websockets.connect(murf_uri, timeout=10) as websocket:
+        # FIXED: Changed `timeout` to `open_timeout`
+        async with websockets.connect(murf_uri, open_timeout=10) as websocket:
             voice_id = "en-US-natalie"
             logging.info(f"Successfully connected to Murf AI, using voice: {voice_id}")
             
