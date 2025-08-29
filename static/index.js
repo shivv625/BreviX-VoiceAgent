@@ -35,6 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const configOverlay = document.getElementById("configOverlay");
   const configSaveBtn = document.getElementById("configSaveBtn");
   const configCloseBtn = document.getElementById("configCloseBtn");
+  const configCancelBtn = document.getElementById("configCancelBtn");
 
   // Enhanced status management
   const updateStatus = (status, message) => {
@@ -727,11 +728,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // NEW: Config modal event listeners
   configBtn.addEventListener("click", openConfigModal);
   configCloseBtn.addEventListener("click", closeConfigModal);
+  configCancelBtn.addEventListener("click", closeConfigModal);
   configSaveBtn.addEventListener("click", saveApiKeys);
   configOverlay.addEventListener("click", closeConfigModal);
 
   // Prevent modal from closing when clicking inside it
-  configModal.querySelector(".bg-white").addEventListener("click", (e) => {
+  configModal.querySelector(".bg-gray-900").addEventListener("click", (e) => {
     e.stopPropagation();
   });
 
