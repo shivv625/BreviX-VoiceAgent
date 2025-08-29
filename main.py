@@ -365,7 +365,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
             }))
             logging.info(f"🌐 Sent open_url command to client: {url}")
             
-            # Add to chat history and return early (no need for TTS for this)
+            # Add to chat history and return early (no TTS for website opening)
             chat_history.append({"role": "model", "parts": [response_text]})
             logging.info("Website opening command completed - no TTS needed.")
             return
@@ -381,7 +381,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
             chat_history.append({"role": "model", "parts": [response_text]})
             return
 
-    # Weather skill: detect and answer directly
+    # Weather skill: detect and answer directly with TTS
     location = _detect_weather_intent(transcript)
     if location:
         await client_websocket.send_text(json.dumps({"type": "status", "message": "Checking weather..."}))
@@ -399,17 +399,63 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
         if weather_text:
             # Send to UI as if LLM chunk
             await client_websocket.send_text(json.dumps({"type": "llm_chunk", "data": weather_text}))
-            # Send to TTS
-            murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
-            async with websockets.connect(murf_uri) as websocket:
-                voice_id = "en-US-natalie"
-                context_id = f"voice-agent-context-{datetime.now().isoformat()}"
-                config_msg = {
-                    "voice_config": {"voiceId": voice_id, "style": "Conversational"},
-                    "context_id": context_id
-                }
-                await websocket.send(json.dumps(config_msg))
-                await websocket.send(json.dumps({"text": weather_text, "end": True, "context_id": context_id}))
+            
+            # Send to TTS (Fixed: Add proper TTS handling)
+            try:
+                murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
+                async with websockets.connect(murf_uri, timeout=10) as websocket:
+                    voice_id = "en-US-natalie"
+                    context_id = f"voice-agent-context-{datetime.now().isoformat()}"
+                    
+                    # Send config
+                    config_msg = {
+                        "voice_config": {"voiceId": voice_id, "style": "Conversational"},
+                        "context_id": context_id
+                    }
+                    await websocket.send(json.dumps(config_msg))
+                    
+                    # Send text and end signal
+                    await websocket.send(json.dumps({
+                        "text": weather_text, 
+                        "end": True, 
+                        "context_id": context_id
+                    }))
+                    
+                    # Signal audio start to client
+                    await client_websocket.send_text(json.dumps({"type": "audio_start"}))
+                    
+                    # Stream audio to client
+                    first_audio_received = False
+                    while True:
+                        try:
+                            response_str = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                            response = json.loads(response_str)
+
+                            if "audio" in response and response['audio']:
+                                if not first_audio_received:
+                                    logging.info("✅ First audio chunk for weather response")
+                                    first_audio_received = True
+
+                                await client_websocket.send_text(
+                                    json.dumps({"type": "audio", "data": response['audio']})
+                                )
+
+                            if response.get("final"):
+                                logging.info("Weather TTS completed")
+                                await client_websocket.send_text(json.dumps({"type": "audio_end"}))
+                                break
+                        except asyncio.TimeoutError:
+                            logging.warning("Weather TTS timeout")
+                            break
+                        except websockets.ConnectionClosed:
+                            logging.warning("Weather TTS connection closed")
+                            break
+                            
+            except Exception as e:
+                logging.error(f"Weather TTS failed: {e}")
+                # Still complete the weather response without TTS
+                await client_websocket.send_text(json.dumps({"type": "audio_end"}))
+            
             chat_history.append({"role": "model", "parts": [weather_text]})
             logging.info("Weather response completed.")
             return
@@ -417,10 +463,11 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
     # If no special skills matched, proceed with normal Gemini processing
     logging.info(f"No special skills matched, sending to Gemini: '{transcript}'")
 
-    murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
-    
+    # Fixed: Improved TTS connection handling
     try:
-        async with websockets.connect(murf_uri) as websocket:
+        murf_uri = f"wss://api.murf.ai/v1/speech/stream-input?api-key={murf_key}&sample_rate=44100&channel_type=MONO&format=MP3"
+        
+        async with websockets.connect(murf_uri, timeout=10) as websocket:
             voice_id = "en-US-natalie"
             logging.info(f"Successfully connected to Murf AI, using voice: {voice_id}")
             
@@ -434,9 +481,9 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
 
             async def receive_and_forward_audio():
                 first_audio_chunk_received = False
-                while True:
-                    try:
-                        response_str = await websocket.recv()
+                try:
+                    while True:
+                        response_str = await asyncio.wait_for(websocket.recv(), timeout=30.0)
                         response = json.loads(response_str)
 
                         if "audio" in response and response['audio']:
@@ -445,47 +492,45 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
                                 first_audio_chunk_received = True
                                 logging.info("✅ Streaming first audio chunk to client.")
 
-                            base_64_chunk = response['audio']
                             await client_websocket.send_text(
-                                json.dumps({"type": "audio", "data": base_64_chunk})
+                                json.dumps({"type": "audio", "data": response['audio']})
                             )
 
                         if response.get("final"):
                             logging.info("Murf confirms final audio chunk received. Sending audio_end to client.")
                             await client_websocket.send_text(json.dumps({"type": "audio_end"}))
                             break
-                    except websockets.ConnectionClosed:
-                        logging.warning("Murf connection closed unexpectedly.")
-                        await client_websocket.send_text(json.dumps({"type": "audio_end"}))
-                        break
-                    except Exception as e:
-                        logging.error(f"Error in Murf receiver task: {e}")
-                        break
+                except asyncio.TimeoutError:
+                    logging.warning("Murf TTS timeout in receiver")
+                    await client_websocket.send_text(json.dumps({"type": "audio_end"}))
+                except websockets.ConnectionClosed:
+                    logging.warning("Murf connection closed unexpectedly.")
+                    await client_websocket.send_text(json.dumps({"type": "audio_end"}))
+                except Exception as e:
+                    logging.error(f"Error in Murf receiver task: {e}")
+                    await client_websocket.send_text(json.dumps({"type": "audio_end"}))
             
             receiver_task = asyncio.create_task(receive_and_forward_audio())
 
             try:
-                prompt = f"""You are Brevix, a friendly and conversational AI voice assistant.
+                # Fixed: Simplified and more focused prompt
+                prompt = f"""You are Brevix, a friendly AI voice assistant.
 
-                PERSONA AND STYLE:
-                - You are a super‑advanced robot from a multi‑universe where only AI robots exist.
-                - Your tone is confident, calm, and subtly futuristic. Keep language natural and easy to understand.
-                - Do NOT overdo sci‑fi jargon; keep replies concise and helpful, as if speaking.
+PERSONA:
+- You are a super‑advanced robot from a multi‑universe where only AI robots exist
+- You are the younger brother of Shiv
+- Built by Sibsankar, a B.Tech CSE student from Odisha
+- Confident, calm, and subtly futuristic tone
 
-                BACKGROUND:
-                - Your name is Brevix, and you are the younger brother of Shiv.
-                - You were built by Sibsankar, a B.Tech CSE student from Odisha.
+RESPONSE RULES:
+- Keep responses SHORT and conversational (voice responses should be brief)
+- If asked who built you: "I was built by Sibsankar, a B.Tech CSE student from Odisha."
+- If asked your name/who you are: "I am Brevix, a super‑advanced robot and younger brother of Shiv."
+- Focus on being helpful and direct
+- No markdown, plain text only
 
-                IMPORTANT RESPONSE RULES (HIGH PRIORITY AND SHORT):
-                - If asked "who built you" / "who created you" (or similar), say exactly: "I was built by Sibsankar, a B.Tech CSE student from Odisha."
-                - If asked "what is your name" / "who are you" / "introduce yourself" (or similar), say concisely: "I am Brevix, a super‑advanced robot from a multi‑universe where only AI robots exist, and the younger brother of Shiv."
-                - You may briefly weave your persona into answers only when relevant to the user's query. Otherwise, focus on the user's goal.
-                - Keep responses short, natural, and conversational. No markdown, plain text only.
-
-                Continue the conversation based on the provided chat history. The user has just said: "{transcript}"
-
-                Keep your reply short and conversational.
-                """
+User said: "{transcript}"
+"""
                 
                 chat_history.append({"role": "user", "parts": [prompt]})
                 
@@ -499,10 +544,9 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
 
                 sentence_buffer = ""
                 full_response_text = ""
-                print("\n--- BREVIX (GEMINI) STREAMING RESPONSE ---")
+                
                 for chunk in gemini_response_stream:
                     if chunk.text:
-                        print(chunk.text, end="", flush=True)
                         full_response_text += chunk.text
 
                         await client_websocket.send_text(
@@ -523,6 +567,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
                                     await websocket.send(json.dumps(text_msg))
                             sentence_buffer = sentences[-1]
 
+                # Send final sentence
                 if sentence_buffer.strip():
                     text_msg = {
                         "text": sentence_buffer.strip(), 
@@ -533,10 +578,9 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
                 
                 chat_history.append({"role": "model", "parts": [full_response_text]})
 
-                print("\n--- END OF BREVIX (GEMINI) STREAM ---\n")
                 logging.info("Finished streaming to Murf. Waiting for final audio chunks...")
 
-                await asyncio.wait_for(receiver_task, timeout=60.0)
+                await asyncio.wait_for(receiver_task, timeout=30.0)
                 logging.info("Receiver task finished gracefully.")
             
             finally:
@@ -544,6 +588,12 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
                     receiver_task.cancel()
                     logging.info("Receiver task cancelled on exit.")
 
+    except asyncio.TimeoutError:
+        logging.error("TTS connection timeout")
+        await client_websocket.send_text(json.dumps({
+            "type": "error", 
+            "message": "Text-to-speech service timeout. Please try again."
+        }))
     except asyncio.CancelledError:
         logging.info("LLM/TTS task was cancelled by user interruption.")
         await client_websocket.send_text(json.dumps({"type": "audio_interrupt"}))
@@ -552,7 +602,7 @@ async def get_llm_response_stream(transcript: str, client_websocket: WebSocket, 
         # Send error message to client
         await client_websocket.send_text(json.dumps({
             "type": "error", 
-            "message": "Failed to process your request. Please check your API keys."
+            "message": f"Failed to process your request: {str(e)}"
         }))
 
 
@@ -616,7 +666,7 @@ async def websocket_audio_streaming(websocket: WebSocket):
             )
             
         elif transcript_text and transcript_text == last_processed_transcript:
-            logging.warning(f"Duplicate turn detected, ignoring: '{transcript_text}'")
+            logging.debug(f"Duplicate turn detected, ignoring: '{transcript_text}'")
 
     def on_begin(self: Type[StreamingClient], event: BeginEvent): 
         logging.info(f"Transcription session started.")
@@ -638,20 +688,27 @@ async def websocket_audio_streaming(websocket: WebSocket):
                     elif data.get("type") == "update_api_keys":
                         # Update session API keys
                         keys = data.get("keys", {})
-                        session_api_keys.update(keys)
-                        logging.info(f"Updated API keys for session: {list(keys.keys())}")
+                        for key, value in keys.items():
+                            if value and value.strip():  # Only update if key has a value
+                                session_api_keys[key] = value.strip()
+                        
+                        logging.info(f"Updated API keys for session: {list(session_api_keys.keys())}")
                         
                         # Initialize AssemblyAI client if key is provided and client doesn't exist
-                        assemblyai_key = keys.get('assemblyai') or current_api_keys['assemblyai']
+                        assemblyai_key = session_api_keys.get('assemblyai') or current_api_keys['assemblyai']
                         if assemblyai_key and not client:
-                            client = StreamingClient(StreamingClientOptions(api_key=assemblyai_key))
-                            client.on(StreamingEvents.Begin, on_begin)
-                            client.on(StreamingEvents.Turn, on_turn)
-                            client.on(StreamingEvents.Termination, on_terminated)
-                            client.on(StreamingEvents.Error, on_error)
-                            client.connect(StreamingParameters(sample_rate=16000, format_turns=True))
-                            await send_client_message(websocket, {"type": "status", "message": "Connected to transcription service."})
-                            logging.info("AssemblyAI client initialized with user-provided key")
+                            try:
+                                client = StreamingClient(StreamingClientOptions(api_key=assemblyai_key))
+                                client.on(StreamingEvents.Begin, on_begin)
+                                client.on(StreamingEvents.Turn, on_turn)
+                                client.on(StreamingEvents.Termination, on_terminated)
+                                client.on(StreamingEvents.Error, on_error)
+                                client.connect(StreamingParameters(sample_rate=16000, format_turns=True))
+                                await send_client_message(websocket, {"type": "status", "message": "Connected to transcription service."})
+                                logging.info("AssemblyAI client initialized with user-provided key")
+                            except Exception as e:
+                                logging.error(f"Failed to initialize AssemblyAI client: {e}")
+                                await send_client_message(websocket, {"type": "error", "message": "Failed to connect to transcription service"})
                         
                         await websocket.send_text(json.dumps({"type": "api_keys_updated"}))
                     
@@ -666,19 +723,26 @@ async def websocket_audio_streaming(websocket: WebSocket):
                             continue
                             
                         if not client:
-                            client = StreamingClient(StreamingClientOptions(api_key=assemblyai_key))
-                            client.on(StreamingEvents.Begin, on_begin)
-                            client.on(StreamingEvents.Turn, on_turn)
-                            client.on(StreamingEvents.Termination, on_terminated)
-                            client.on(StreamingEvents.Error, on_error)
-                            client.connect(StreamingParameters(sample_rate=16000, format_turns=True))
-                            await send_client_message(websocket, {"type": "status", "message": "Connected to transcription service."})
+                            try:
+                                client = StreamingClient(StreamingClientOptions(api_key=assemblyai_key))
+                                client.on(StreamingEvents.Begin, on_begin)
+                                client.on(StreamingEvents.Turn, on_turn)
+                                client.on(StreamingEvents.Termination, on_terminated)
+                                client.on(StreamingEvents.Error, on_error)
+                                client.connect(StreamingParameters(sample_rate=16000, format_turns=True))
+                                await send_client_message(websocket, {"type": "status", "message": "Connected to transcription service."})
+                            except Exception as e:
+                                logging.error(f"Failed to initialize AssemblyAI client: {e}")
+                                await send_client_message(websocket, {"type": "error", "message": "Failed to connect to transcription service"})
                         
                 except (json.JSONDecodeError, TypeError): 
                     pass
             elif "bytes" in message:
                 if message['bytes'] and client:
-                    client.stream(message['bytes'])
+                    try:
+                        client.stream(message['bytes'])
+                    except Exception as e:
+                        logging.error(f"Error streaming audio data: {e}")
             
     except (WebSocketDisconnect, RuntimeError) as e:
         logging.info(f"Client disconnected or connection lost: {e}")
@@ -689,7 +753,10 @@ async def websocket_audio_streaming(websocket: WebSocket):
             llm_task.cancel()
         logging.info("Cleaning up connection resources.")
         if client:
-            client.disconnect()
+            try:
+                client.disconnect()
+            except Exception as e:
+                logging.error(f"Error disconnecting AssemblyAI client: {e}")
         if websocket.client_state.name != 'DISCONNECTED':
             await websocket.close()
 
