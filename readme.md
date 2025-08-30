@@ -21,6 +21,9 @@ Brevix is an intelligent voice-powered conversational agent that combines speech
 - Modern web browser with microphone access
 - Internet connection
 
+## 🤖live website
+https://brevix-voiceagent.onrender.com/
+
 ### Installation
 
 1. **Clone and install**
@@ -191,5 +194,3 @@ MIT License - see [LICENSE](LICENSE) file for details.
 **Creator**: Sibsankar - B.Tech CSE Student, Odisha
 
 ---
-
-**Made with ❤️ by Sibsankar | Powered by AI**
