@@ -574,12 +574,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ### Contact
 
-- **Email**: [your-email@example.com]
-- **GitHub**: [@yourusername]
-- **LinkedIn**: [Your LinkedIn Profile]
+- **Email**: [sibsankar2727@gmail.com]
+- **GitHub**: [shivv625]
+- **LinkedIn**: [Sibsankar Samal ]
 
 ---
-
-**Made with ❤️ by Sibsankar | Powered by AI | Built for the Future**
-
-> *"Brevix represents the next generation of human-AI interaction, where conversation flows as naturally as speaking with a friend, powered by the most advanced AI technologies available."*
